@@ -71,9 +71,36 @@ fn set_bit(byte: &mut u8, pos: usize, bit: bool) {}
 // multiplication operation on blocks, see p11 of Ref[1]
 // takes 128 bit blocks, builds the product and returns it (as a 128 bit block)
 //
+fn mul_blocks(x: u128, y: u128) -> u128 {
+    let mut z = 0u128;
+    let mut v = y;
+    let R = 225u128 << 120; // R is 11100001 || 0(120), see spec[1]
+
+    for i in 0..128 {
+        let xi_bit = (x >> i) & 1;
+        let vi_bit = (v >> i) & 1;
+        let zi_bit = (z >> i) & 1;
+
+        if xi_bit == 0 {
+            z |= zi_bit << (i + 1);
+        } else {
+            z |= (zi_bit ^ vi_bit) << (i + 1);
+        }
+
+        // if lsb is 1
+        if v & 1 == 0 {
+            v |= vi_bit >> 1;
+        } else {
+            v |= (vi_bit >> 1) ^ R;
+        }
+    }
+
+    z
+}
+
 // TODO : currently implemented as an array of bytes, but should probably use
-// 127 bit usigned ints
-fn mul_block(x: &[u8; 16], y: &[u8; 16], output: &mut [u8; 16]) {
+// 128 bit usigned ints
+fn mul_block_bytes(x: &[u8; 16], y: &[u8; 16], output: &mut [u8; 16]) {
     let mut z = [0u8; 16];
     let mut v = *y;
 
