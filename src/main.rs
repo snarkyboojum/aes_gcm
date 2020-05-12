@@ -66,7 +66,26 @@ fn print_bits(bytes: &[u8]) {
     print!("\n");
 }
 
-fn set_bit(byte: &mut u8, pos: usize, bit: bool) {}
+// assume big endian
+fn u8_to_u128(bytes: &[u8]) -> u128 {
+    assert_eq!(bytes.len(), 16);
+
+    let mut output = 0u128;
+    for (i, &byte) in bytes.iter().rev().enumerate() {
+        // println!("shifting byte: {}, by: {}", byte, i * 8);
+        output |= (byte as u128) << (i * 8);
+        // println!("output: {:b}", output);
+    }
+
+    // println!("bytes: {:?}", bytes);
+    // println!("output: {:?}", output);
+
+    output
+}
+
+// assumes length of bit_string >= s
+// increments the right most s bits of the string see p11, spec[1]
+fn inc_s(bit_string: &[u8], s: u32, output: &[u8]) {}
 
 // multiplication operation on blocks, see p11 of Ref[1]
 // takes 128 bit blocks, builds the product and returns it (as a 128 bit block)
@@ -98,58 +117,29 @@ fn mul_blocks(x: u128, y: u128) -> u128 {
     z
 }
 
-// TODO : currently implemented as an array of bytes, but should probably use
-// 128 bit usigned ints
-fn mul_block_bytes(x: &[u8; 16], y: &[u8; 16], output: &mut [u8; 16]) {
-    let mut z = [0u8; 16];
-    let mut v = *y;
-
-    let mut R = [0u8; 16];
-    R[1] = 0b11100001; // R is 11100001 || 0(120) as per spec[1]
-                       // print_bits(&R);
-
-    // looping 'bitwise', but over an array of bytes
-    for i in 0..128 {
-        let byte_offset = i / 8;
-        let bit_offset = i % 8;
-
-        let x_bit = get_bit(x[byte_offset], bit_offset);
-        let z_bit = get_bit(z[byte_offset], bit_offset);
-        let v_bit = get_bit(v[byte_offset], bit_offset);
-
-        if x_bit {
-            if bit_offset == 7 {
-                set_bit(&mut z[byte_offset + 1], 0, z_bit);
-            } else {
-                set_bit(&mut z[byte_offset], bit_offset + 1, z_bit);
-            }
-        } else {
-            // TODO: is this right? does xor'ing bool work?
-            if bit_offset == 7 {
-                set_bit(&mut z[byte_offset + 1], 0, z_bit ^ v_bit);
-            } else {
-                set_bit(&mut z[byte_offset], bit_offset + 1, z_bit ^ v_bit);
-            }
-        }
-
-        if !lsb(v[i]) {
-            v[i + 1] = v[i] >> 1;
-        }
-        if lsb(v[i]) {
-            // v[i + 1] = (v[i] >> 1) ^ R;
-        }
-    }
-    assert_eq!(x.len(), 16);
-    assert_eq!(y.len(), 16);
-}
-
 // GHASH function, see p12 of Ref[1]
 // takes an integer m multiple of 128 bit strings, i.e. m x 128
-fn ghash(bit_string: &[u8], output: &mut [u8]) {}
+// for m > 0 (some positive integer)
+fn ghash(hash_subkey: u128, bit_string: &[u128]) -> u128 {
+    let mut y = 0u128;
+    let m = bit_string.len();
+
+    // TODO: do proper error handling here
+    assert!(m > 0);
+
+    for i in 1..m {
+        let yi = mul_blocks(y ^ bit_string[i - 1], hash_subkey);
+        y = yi;
+    }
+
+    y
+}
 
 // we use the AES-128 bit cipher, see p13 of Ref[1]
 fn gctr(counter_block: &[u8], bit_string: &[u8], output: &mut [u8]) {
-    // TODO: parallelise as much as possible here - bit string into n * 128 bit blocks
+    // TODO: the dream would be to parallelise as much as possible here - bit string into n * 128 bit blocks
+
+    // check for "empty" bit string - is this null or something else?
 }
 
 // authenticated encryption algorithm, see p15 of Ref[1] - using AES-128
@@ -161,9 +151,14 @@ pub fn gcm_ae(
     ciphertext: &mut [u8],
     tag: &mut [u8],
 ) {
+    // TODO: this is all just faking it for now - we need to deal with a real key
     // apply cipher to the "zero" block
     let key_schedule = [0u32; 4 * (aes_crypt::Rounds::Ten as usize + 1)];
-    let hash_subkey = aes_crypt::cipher(&[0u8; 16], &key_schedule);
+
+    // convert to a u128
+    let hash_bytes_subkey = aes_crypt::cipher(&[0u8; 16], &key_schedule);
+    // TODO: this assume big endian architecture
+    let hash_subkey = u8_to_u128(&hash_bytes_subkey);
 
     // generate the key from the IV
     let counter_block = [0u8; 16];
@@ -217,8 +212,23 @@ mod tests {
         assert_eq!(get_bit(byte, 1), true);
         assert_eq!(get_bit(byte, 0), false);
     }
+
     #[test]
-    fn test_mul_block() {}
+    fn test_u8_to_u128() {
+        let mut bytes = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01,
+        ];
+        assert_eq!(u8_to_u128(&bytes), 1);
+
+        bytes = [
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+        assert_eq!(u8_to_u128(&bytes), 2u128.pow(120));
+    }
+    #[test]
+    fn test_mul_blocks() {}
 
     #[test]
     fn test_ghash() {}
