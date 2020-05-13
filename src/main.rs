@@ -83,9 +83,22 @@ fn u8_to_u128(bytes: &[u8]) -> u128 {
     output
 }
 
-// assumes length of bit_string >= s
-// increments the right most s bits of the string see p11, spec[1]
-fn inc_s(bit_string: &[u8], s: u32, output: &[u8]) {}
+// get the right-most 's' bits in bytes
+fn lsb_s(s: u32, bytes: &[u8], result: &mut [u8]) {}
+
+// get the left-most 's' bits in bytes
+fn msb_s(s: u32, bytes: &[u8], result: &mut [u8]) {}
+
+// increments the right-most 's' bits of the bit string
+// by 1 modulo 2^s - see p11, spec[1]
+fn inc_s(s: u32, bit_string: u128) -> u128 {
+    // assumes length of bit_string >= s
+    0128
+}
+
+// TODO: not sure if we need this or if we should be internally
+// representing padded IV as 128 bit of just bytes
+fn pad_iv(bytes: &[u8], padded_iv: &mut [u128]) {}
 
 // multiplication operation on blocks, see p11 of Ref[1]
 // takes 128 bit blocks, builds the product and returns it (as a 128 bit block)
@@ -136,7 +149,7 @@ fn ghash(hash_subkey: u128, bit_string: &[u128]) -> u128 {
 }
 
 // we use the AES-128 bit cipher, see p13 of Ref[1]
-fn gctr(counter_block: &[u8], bit_string: &[u8], output: &mut [u8]) {
+fn gctr(key_schedule: &[u32; 44], counter_block: u128, bit_string: &[u8], output: &mut [u8]) {
     // TODO: the dream would be to parallelise as much as possible here - bit string into n * 128 bit blocks
 
     // check for "empty" bit string - is this null or something else?
@@ -145,25 +158,42 @@ fn gctr(counter_block: &[u8], bit_string: &[u8], output: &mut [u8]) {
 // authenticated encryption algorithm, see p15 of Ref[1] - using AES-128
 // returns ciphertext and tag
 pub fn gcm_ae(
+    key: &[u8],
     iv: &[u8],
     plaintext: &[u8],
     additional_data: &[u8],
     ciphertext: &mut [u8],
     tag: &mut [u8],
+    tag_length: u32, // do we need tag length (bits) parameterised?
 ) {
-    // TODO: this is all just faking it for now - we need to deal with a real key
-    // apply cipher to the "zero" block
-    let key_schedule = [0u32; 4 * (aes_crypt::Rounds::Ten as usize + 1)];
+    // build the key schedule for cipher (AES-128)
+    let mut key_schedule = [0u32; 4 * (aes_crypt::Rounds::Ten as usize + 1)];
+    aes_crypt::expand_key(
+        &key,
+        &mut key_schedule,
+        aes_crypt::KeyLength::OneTwentyEight,
+    );
 
-    // convert to a u128
+    // TODO: this assume big endian architecture - convert to a u128
+    // apply cipher to the "zero" block
     let hash_bytes_subkey = aes_crypt::cipher(&[0u8; 16], &key_schedule);
-    // TODO: this assume big endian architecture
     let hash_subkey = u8_to_u128(&hash_bytes_subkey);
 
-    // generate the key from the IV
-    let counter_block = [0u8; 16];
-    let mut ciphertext = [0u8; 16];
-    gctr(&counter_block, plaintext, &mut ciphertext);
+    // build the pre counter block - pad IV isn't a multiple of 128 bits
+    let mut padded_iv = Vec::<u128>::new();
+    if iv.len() % 16 != 0 {
+        pad_iv(&iv, &mut padded_iv);
+    }
+    // TODO: we need 0(64bits) || iv.len()(64bits) - check this
+    padded_iv.push(0u128 | (iv.len() * 8) as u128);
+    let counter_block = ghash(hash_subkey, &padded_iv);
+
+    gctr(
+        &key_schedule,
+        inc_s(32, counter_block),
+        plaintext,
+        ciphertext,
+    );
 }
 
 // authenticated decryption, see p16 of Ref[1] - using AES-128
@@ -238,14 +268,24 @@ mod tests {
 
     #[test]
     fn test_gcm_ae() {
-        /*
-        Key = c608316f809e3c54f3272a18256a5fec
-        IV = 38f4ec6b2c1c197bf6e0e994
-        CT = 659228b6282c2226c755136a9fc1bcacdc8cb640660cc784a841b5c385f34302a8bc5c0bd30b982d1b641bf642d958dddb3d46
-        AAD = d22804c6a53262ccd930946be718e465
-        Tag = ac9ed5212b5623d445d76a5f25e14e
-        PT = 2fc429740460dd0bea16bfe314d3258f6708b5ebb8ad2c4afd4d11fe99646227abe997f0688fc0e3f1c7c0462dc9254dbebfb0
-        */
+        use hex::FromHex;
+        let key = Vec::from_hex("c608316f809e3c54f3272a18256a5fec").expect("Couldn't parse key");
+        let iv = Vec::from_hex("38f4ec6b2c1c197bf6e0e994").expect("Couldn't parse IV");
+        let ct = Vec::from_hex("659228b6282c2226c755136a9fc1bcacdc8cb640660cc784a841b5c385f34302a8bc5c0bd30b982d1b641bf642d958dddb3d46").expect("Couldn't parse ciphertext");
+        let aad = Vec::from_hex("d22804c6a53262ccd930946be718e465").expect("Couldn't parse AAD");
+        let tag = Vec::from_hex("ac9ed5212b5623d445d76a5f25e14e").expect("Couldn't parse tag");
+        let pt = Vec::from_hex("2fc429740460dd0bea16bfe314d3258f6708b5ebb8ad2c4afd4d11fe99646227abe997f0688fc0e3f1c7c0462dc9254dbebfb0").expect("Couldn't parse plaintext");
+
+        let mut test_tag = Vec::<u8>::new();
+        let mut test_ct = Vec::<u8>::new();
+
+        gcm_ae(&key, &iv, &pt, &aad, &mut test_ct, &mut test_tag, 120);
+
+        assert_eq!(test_ct, ct);
+        assert_eq!(test_tag, tag);
+
+        // println!("Ciphertext: {:?}", &test_ct);
+        // println!("Tag: {:?}", &test_tag);
     }
 
     #[test]
