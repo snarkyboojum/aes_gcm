@@ -93,7 +93,7 @@ fn msb_s(s: u32, bytes: &[u8], result: &mut [u8]) {}
 // by 1 modulo 2^s - see p11, spec[1]
 fn inc_s(s: u32, bit_string: u128) -> u128 {
     // assumes length of bit_string >= s
-    0128
+    0u128
 }
 
 // TODO: not sure if we need this or if we should be internally
