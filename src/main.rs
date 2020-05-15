@@ -84,16 +84,63 @@ fn u8_to_u128(bytes: &[u8]) -> u128 {
 }
 
 // get the right-most 's' bits in bytes
-fn lsb_s(s: u32, bytes: &[u8], result: &mut [u8]) {}
+fn lsb_s(s: usize, blocks: &[u128], result: &mut Vec<u128>) {
+    assert!(blocks.len() * 128 >= s);
+
+    println!("lsb for {} bits", s);
+    let num_blocks = s / 128;
+    let bits_remainder = s % 128; //(blocks.len() * 128) % s;
+
+    // push blocks in reverse so we get the "right-most"
+    for i in (0..num_blocks).rev() {
+        result.push(blocks[i]);
+    }
+
+    if bits_remainder != 0 {
+        let mask = 2u128.pow(bits_remainder as u32) - 1;
+        // println!("mask: {:#2x}", mask);
+
+        // get the 'num_blocks - 1' block from the end and mask it
+        let remainder = blocks[blocks.len() - num_blocks - 1] & mask;
+        result.push(remainder);
+    }
+}
 
 // get the left-most 's' bits in bytes
-fn msb_s(s: u32, bytes: &[u8], result: &mut [u8]) {}
+fn msb_s(s: usize, blocks: &[u128], result: &mut Vec<u128>) {
+    assert!(blocks.len() * 128 >= s);
 
-// increments the right-most 's' bits of the bit string
-// by 1 modulo 2^s - see p11, spec[1]
-fn inc_s(s: u32, bit_string: u128) -> u128 {
-    // assumes length of bit_string >= s
-    0u128
+    println!("msb for {} bits", s);
+    let num_blocks = s / 128;
+    let bits_remainder = s % 128; //(blocks.len() * 128) % s;
+
+    for i in 0..num_blocks {
+        result.push(blocks[i]);
+    }
+    // if there are bits that spill over a block boundary
+    // use a mask to grab it , e.g. byte & 0xf0
+    if bits_remainder != 0 {
+        // println!("bits remainder: {:b}", bits_remainder);
+        // println!("pulling from block num: {}", num_blocks);
+        let remainder = blocks[num_blocks] >> (128 - bits_remainder);
+        result.push(remainder);
+    }
+}
+
+// increments the right-most 32 bits of the bit string by 1
+// modulo 2^32 - see p11, spec[1]
+fn inc_32(bit_string: u128) -> u128 {
+    // get the left most 96 bits
+    let msb = bit_string >> 32;
+
+    // take the right most 32 bits and increment by 1 modulo 2^32
+    let mut lsb = (bit_string & 0xffffffff) as u32;
+    lsb = lsb.wrapping_add(1);
+
+    // put them together
+    let result = msb << 32 | lsb as u128;
+
+    result
 }
 
 // TODO: not sure if we need this or if we should be internally
@@ -188,12 +235,7 @@ pub fn gcm_ae(
     padded_iv.push(0u128 | (iv.len() * 8) as u128);
     let counter_block = ghash(hash_subkey, &padded_iv);
 
-    gctr(
-        &key_schedule,
-        inc_s(32, counter_block),
-        plaintext,
-        ciphertext,
-    );
+    gctr(&key_schedule, inc_32(counter_block), plaintext, ciphertext);
 }
 
 // authenticated decryption, see p16 of Ref[1] - using AES-128
@@ -256,6 +298,71 @@ mod tests {
             0x00, 0x00,
         ];
         assert_eq!(u8_to_u128(&bytes), 2u128.pow(120));
+    }
+
+    #[test]
+    fn test_msb_s() {
+        let blocks: &[u128] = &[
+            0x00000000000000000000000000000000,
+            0xff000000000000000000000000000000,
+            0xffa00000000000000000000000000000,
+            0xffae0000000000000000000000000000,
+        ];
+
+        let mut result = Vec::<u128>::new();
+        msb_s(16, blocks, &mut result);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 0x00);
+
+        let mut result = Vec::<u128>::new();
+        msb_s(144, blocks, &mut result);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1], 0xff00);
+
+        let mut result = Vec::<u128>::new();
+        msb_s(133, blocks, &mut result);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1], 0b11111);
+    }
+
+    #[test]
+    fn test_lsb_s() {
+        let blocks: &[u128] = &[
+            0x00000000000000000000000000000000,
+            0x00000000000000000000000000000000,
+            0x0000000000000000000000000000000f,
+            0x00000000000000000000000000000000,
+        ];
+
+        let mut result = Vec::<u128>::new();
+        lsb_s(16, blocks, &mut result);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 0x00);
+
+        let mut result = Vec::<u128>::new();
+        lsb_s(144, blocks, &mut result);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1], 0x000f);
+
+        let mut result = Vec::<u128>::new();
+        lsb_s(133, blocks, &mut result);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1], 0b1111);
+    }
+
+    #[test]
+    fn test_inc_32() {
+        let mut test: u128 = 0x0000000000000000000000000000000f;
+        assert_eq!(inc_32(test), 0x00000000000000000000000000000010);
+
+        test = 0x00000000000000000000000000000000;
+        assert_eq!(inc_32(test), 0x00000000000000000000000000000001);
+
+        test = 0x000000000000000000000000ffffffff;
+        assert_eq!(inc_32(test), 0x00000000000000000000000000000000);
+
+        test = 0x00000000000000000000000effffffff;
+        assert_eq!(inc_32(test), 0x00000000000000000000000e00000000);
     }
     #[test]
     fn test_mul_blocks() {}
