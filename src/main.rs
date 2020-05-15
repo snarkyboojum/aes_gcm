@@ -83,7 +83,7 @@ fn u8_to_u128(bytes: &[u8]) -> u128 {
     output
 }
 
-// get the right-most 's' bits in bytes
+// get the right-most 's' bits in blocks
 fn lsb_s(s: usize, blocks: &[u128], result: &mut Vec<u128>) {
     assert!(blocks.len() * 128 >= s);
 
@@ -106,7 +106,7 @@ fn lsb_s(s: usize, blocks: &[u128], result: &mut Vec<u128>) {
     }
 }
 
-// get the left-most 's' bits in bytes
+// get the left-most 's' bits in blocks
 fn msb_s(s: usize, blocks: &[u128], result: &mut Vec<u128>) {
     assert!(blocks.len() * 128 >= s);
 
@@ -133,7 +133,7 @@ fn inc_32(bit_string: u128) -> u128 {
     // get the left most 96 bits
     let msb = bit_string >> 32;
 
-    // take the right most 32 bits and increment by 1 modulo 2^32
+    // take the right most 32 bits and increment by 1, modulo 2^32
     let mut lsb = (bit_string & 0xffffffff) as u32;
     lsb = lsb.wrapping_add(1);
 
