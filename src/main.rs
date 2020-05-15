@@ -143,10 +143,6 @@ fn inc_32(bit_string: u128) -> u128 {
     result
 }
 
-// TODO: not sure if we need this or if we should be internally
-// representing padded IV as 128 bit of just bytes
-fn pad_iv(bytes: &[u8], padded_iv: &mut [u128]) {}
-
 // multiplication operation on blocks, see p11 of Ref[1]
 // takes 128 bit blocks, builds the product and returns it (as a 128 bit block)
 //
@@ -206,12 +202,12 @@ fn gctr(key_schedule: &[u32; 44], counter_block: u128, bit_string: &[u8], output
 // returns ciphertext and tag
 pub fn gcm_ae(
     key: &[u8],
-    iv: &[u8],
+    iv_bytes: &[u8],
     plaintext: &[u8],
     additional_data: &[u8],
     ciphertext: &mut [u8],
     tag: &mut [u8],
-    tag_length: u32, // do we need tag length (bits) parameterised?
+    tag_size: u32, // do we need tag length (bits) parameterised?
 ) {
     // build the key schedule for cipher (AES-128)
     let mut key_schedule = [0u32; 4 * (aes_crypt::Rounds::Ten as usize + 1)];
@@ -226,16 +222,40 @@ pub fn gcm_ae(
     let hash_bytes_subkey = aes_crypt::cipher(&[0u8; 16], &key_schedule);
     let hash_subkey = u8_to_u128(&hash_bytes_subkey);
 
-    // build the pre counter block - pad IV isn't a multiple of 128 bits
+    // pad IV to ensure it is a multiple of 128 bits
     let mut padded_iv = Vec::<u128>::new();
-    if iv.len() % 16 != 0 {
-        pad_iv(&iv, &mut padded_iv);
-    }
-    // TODO: we need 0(64bits) || iv.len()(64bits) - check this
-    padded_iv.push(0u128 | (iv.len() * 8) as u128);
-    let counter_block = ghash(hash_subkey, &padded_iv);
 
-    gctr(&key_schedule, inc_32(counter_block), plaintext, ciphertext);
+    // pad_iv(&iv, &mut padded_iv);
+    // assume we'll only work with IVs <= 128 bits
+    assert!(iv_bytes.len() <= 16);
+
+    // build the pre-counter block, j0, to pass to gctr()
+    let mut j0 = 0u128;
+    let iv = u8_to_u128(iv_bytes);
+
+    // pad IV appropriately depending on length
+    if iv_bytes.len() == 12 {
+        j0 = iv << 32 | 0x00000001;
+    } else {
+        // e.g. if IV is 120 bits, then s will be 8, so we'll do:
+        //      120 + 8 (0s) + 64 (0s) + 64 (bit repr of length)
+        // TODO: the second term here needs to be rounded up to next nearest integer
+        let s = 128 * ((iv_bytes.len() * 8) / 128) - (iv_bytes.len() * 8);
+        padded_iv.push(iv << s);
+        padded_iv.push((iv_bytes.len() * 8) as u128);
+
+        j0 = ghash(hash_subkey, &padded_iv);
+    }
+    gctr(&key_schedule, inc_32(j0), plaintext, ciphertext);
+
+    // TODO: these needed to be ceil()'d
+    let u = 128 * (ciphertext.len() * 8) / 128 - (ciphertext.len() * 8);
+    let v = 128 * (additional_data.len() * 8) / 128 - (additional_data.len() * 8);
+
+    // let s = u128_to_u8(ghash(hash_subkey, bit_string));
+    // let mut full_tag = Vec::<u8>::new();
+    // let full_tag = gctr(&key_schedule, j0, s, &mut full_tag);
+    // msb_s(tag_size, &full_tag, &mut tag);
 }
 
 // authenticated decryption, see p16 of Ref[1] - using AES-128
