@@ -83,20 +83,6 @@ fn u8_to_u128(bytes: &[u8]) -> u128 {
     output
 }
 
-// assume big endian
-// TODO: cleanup - not needed - can just use .to_be_bytes()
-fn u128_to_u8(block: u128) -> [u8; 16] {
-    let mut bytes = [0u8; 16];
-
-    for i in (0..16).rev() {
-        bytes[i] = ((block >> i * 8) & 0xff) as u8;
-    }
-
-    // println!("block: {:?}", block);
-    // println!("bytes: {:?}", bytes);
-    bytes
-}
-
 // get the left-most 's' bits in bytes
 fn msb_s(s: usize, bytes: &[u8], result: &mut Vec<u8>) {
     assert!(bytes.len() * 128 >= s);
