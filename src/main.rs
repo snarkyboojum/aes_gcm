@@ -43,22 +43,7 @@ pub enum Authenticity {
     Fail,
 }
 
-// this assume big endianess
-fn lsb(byte: u8) -> bool {
-    let lsb = byte & 1;
-    lsb == 1
-}
-
-fn msb(byte: u8) -> bool {
-    let msb = (byte >> 7) & 1;
-    msb == 1
-}
-
-fn get_bit(byte: u8, pos: usize) -> bool {
-    let bit = (byte >> pos) & 1;
-    bit == 1
-}
-
+// TODO: clean up - this helper function is really needed
 fn print_bits(bytes: &[u8]) {
     for b in bytes {
         print!("{:b}", b);
@@ -302,33 +287,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_msb() {
-        let mut byte = 0b10011001;
-        assert_eq!(msb(byte), true);
-
-        byte = 0b01011001;
-        assert_eq!(msb(byte), false);
-    }
-
-    #[test]
-    fn test_lsb() {
-        let mut byte = 0b10011001;
-        assert_eq!(lsb(byte), true);
-
-        byte = 0b00011000;
-        assert_eq!(lsb(byte), false);
-    }
-
-    #[test]
-    fn test_get_bit() {
-        let byte = 0b10011010;
-        assert_eq!(get_bit(byte, 3), true);
-        assert_eq!(get_bit(byte, 7), true);
-        assert_eq!(get_bit(byte, 1), true);
-        assert_eq!(get_bit(byte, 0), false);
-    }
 
     #[test]
     fn test_u8_to_u128() {
