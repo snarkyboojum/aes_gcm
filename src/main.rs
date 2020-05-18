@@ -68,7 +68,7 @@ fn print_bits(bytes: &[u8]) {
 
 // assume big endian
 fn u8_to_u128(bytes: &[u8]) -> u128 {
-    assert_eq!(bytes.len(), 16);
+    assert!(bytes.len() <= 16);
 
     let mut output = 0u128;
     for (i, &byte) in bytes.iter().rev().enumerate() {
@@ -83,46 +83,37 @@ fn u8_to_u128(bytes: &[u8]) -> u128 {
     output
 }
 
-// get the right-most 's' bits in blocks
-fn lsb_s(s: usize, blocks: &[u128], result: &mut Vec<u128>) {
-    assert!(blocks.len() * 128 >= s);
+// assume big endian
+// TODO: cleanup - not needed - can just use .to_be_bytes()
+fn u128_to_u8(block: u128) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
 
-    println!("lsb for {} bits", s);
-    let num_blocks = s / 128;
-    let bits_remainder = s % 128; //(blocks.len() * 128) % s;
-
-    // push blocks in reverse so we get the "right-most"
-    for i in (0..num_blocks).rev() {
-        result.push(blocks[i]);
+    for i in (0..16).rev() {
+        bytes[i] = ((block >> i * 8) & 0xff) as u8;
     }
 
-    if bits_remainder != 0 {
-        let mask = 2u128.pow(bits_remainder as u32) - 1;
-        // println!("mask: {:#2x}", mask);
-
-        // get the 'num_blocks - 1' block from the end and mask it
-        let remainder = blocks[blocks.len() - num_blocks - 1] & mask;
-        result.push(remainder);
-    }
+    // println!("block: {:?}", block);
+    // println!("bytes: {:?}", bytes);
+    bytes
 }
 
-// get the left-most 's' bits in blocks
-fn msb_s(s: usize, blocks: &[u128], result: &mut Vec<u128>) {
-    assert!(blocks.len() * 128 >= s);
+// get the left-most 's' bits in bytes
+fn msb_s(s: usize, bytes: &[u8], result: &mut Vec<u8>) {
+    assert!(bytes.len() * 128 >= s);
 
-    println!("msb for {} bits", s);
-    let num_blocks = s / 128;
-    let bits_remainder = s % 128; //(blocks.len() * 128) % s;
+    // println!("msb for {} bits", s);
+    let num_bytes = s / 8;
+    let bits_remainder = s % 8;
 
-    for i in 0..num_blocks {
-        result.push(blocks[i]);
+    for i in 0..num_bytes {
+        result.push(bytes[i]);
     }
     // if there are bits that spill over a block boundary
     // use a mask to grab it , e.g. byte & 0xf0
     if bits_remainder != 0 {
         // println!("bits remainder: {:b}", bits_remainder);
-        // println!("pulling from block num: {}", num_blocks);
-        let remainder = blocks[num_blocks] >> (128 - bits_remainder);
+        // println!("pulling from byte num: {}", num_bytes);
+        let remainder = bytes[num_bytes] >> (8 - bits_remainder);
         result.push(remainder);
     }
 }
@@ -192,10 +183,43 @@ fn ghash(hash_subkey: u128, bit_string: &[u128]) -> u128 {
 }
 
 // we use the AES-128 bit cipher, see p13 of Ref[1]
-fn gctr(key_schedule: &[u32; 44], counter_block: u128, bit_string: &[u8], output: &mut [u8]) {
-    // TODO: the dream would be to parallelise as much as possible here - bit string into n * 128 bit blocks
+fn gctr(key_schedule: &[u32; 44], counter_block: u128, bit_string: &[u8], output: &mut Vec<u8>) {
+    // don't need to explicitly check for an empty bit_string here - as output will be empty by default
+    if bit_string.len() == 0 {
+        return;
+    }
 
-    // check for "empty" bit string - is this null or something else?
+    // TODO: I think this just gives us the upper bound on number of 128 bit blocks
+    //       which we don't need because we're chunking below
+    // this gives us the ceiling for integer division
+    // let n = ((bit_string.len() * 8) + 128 - 1) / 128;
+    let mut cb = counter_block;
+
+    // need to gather bytes in bit_string into 128 bit blocks. Use chunks() which
+    // will also give us a partial block (if necessary) at the end
+    for (b, block) in bit_string.chunks(16).enumerate() {
+        println!("Block: {:?}", block);
+
+        let mut y = 0u128;
+
+        // cater for a partial block
+        if block.len() < 16 {
+            let mut msb = Vec::<u8>::new();
+            msb_s(
+                block.len() * 8,
+                &aes_crypt::cipher(&cb.to_be_bytes(), key_schedule),
+                &mut msb,
+            );
+            y = u8_to_u128(block) ^ u8_to_u128(&msb);
+            // TODO: there should be a nicer way to do this
+            // grab the correct bytes from the partial block
+            output.extend_from_slice(&y.to_be_bytes()[16 - block.len()..16]);
+        } else {
+            y = u8_to_u128(block) ^ u8_to_u128(&aes_crypt::cipher(&cb.to_be_bytes(), key_schedule));
+            output.extend_from_slice(&y.to_be_bytes());
+        }
+        cb = inc_32(cb);
+    }
 }
 
 // authenticated encryption algorithm, see p15 of Ref[1] - using AES-128
@@ -205,8 +229,8 @@ pub fn gcm_ae(
     iv_bytes: &[u8],
     plaintext: &[u8],
     additional_data: &[u8],
-    ciphertext: &mut [u8],
-    tag: &mut [u8],
+    ciphertext: &mut Vec<u8>,
+    tag: &mut Vec<u8>,
     tag_size: u32, // do we need tag length (bits) parameterised?
 ) {
     // build the key schedule for cipher (AES-128)
@@ -216,31 +240,22 @@ pub fn gcm_ae(
         &mut key_schedule,
         aes_crypt::KeyLength::OneTwentyEight,
     );
-
-    // TODO: this assume big endian architecture - convert to a u128
-    // apply cipher to the "zero" block
     let hash_bytes_subkey = aes_crypt::cipher(&[0u8; 16], &key_schedule);
     let hash_subkey = u8_to_u128(&hash_bytes_subkey);
 
-    // pad IV to ensure it is a multiple of 128 bits
+    // build the ciphertext
+    // pad IV to ensure it is a multiple of 128 bits - assume we'll only work with IVs <= 128 bits
     let mut padded_iv = Vec::<u128>::new();
-
-    // pad_iv(&iv, &mut padded_iv);
-    // assume we'll only work with IVs <= 128 bits
     assert!(iv_bytes.len() <= 16);
 
     // build the pre-counter block, j0, to pass to gctr()
     let mut j0 = 0u128;
-    let iv = u8_to_u128(iv_bytes);
 
-    // pad IV appropriately depending on length
+    let iv = u8_to_u128(iv_bytes);
     if iv_bytes.len() == 12 {
         j0 = iv << 32 | 0x00000001;
     } else {
-        // e.g. if IV is 120 bits, then s will be 8, so we'll do:
-        //      120 + 8 (0s) + 64 (0s) + 64 (bit repr of length)
-        // TODO: the second term here needs to be rounded up to next nearest integer
-        let s = 128 * ((iv_bytes.len() * 8) / 128) - (iv_bytes.len() * 8);
+        let s = 128 * (((iv_bytes.len() * 8) + 128 - 1) / 128) - (iv_bytes.len() * 8);
         padded_iv.push(iv << s);
         padded_iv.push((iv_bytes.len() * 8) as u128);
 
@@ -248,14 +263,38 @@ pub fn gcm_ae(
     }
     gctr(&key_schedule, inc_32(j0), plaintext, ciphertext);
 
-    // TODO: these needed to be ceil()'d
-    let u = 128 * (ciphertext.len() * 8) / 128 - (ciphertext.len() * 8);
-    let v = 128 * (additional_data.len() * 8) / 128 - (additional_data.len() * 8);
+    // build the tag
+    let cipher_len = ciphertext.len() * 8;
+    let ad_len = additional_data.len() * 8;
+    let u = 128 * ((cipher_len + 128 - 1) / 128) - cipher_len;
+    let v = 128 * ((ad_len + 128 - 1) / 128) - ad_len;
+    println!("u, v: {}, {}", u, v);
 
-    // let s = u128_to_u8(ghash(hash_subkey, bit_string));
-    // let mut full_tag = Vec::<u8>::new();
-    // let full_tag = gctr(&key_schedule, j0, s, &mut full_tag);
-    // msb_s(tag_size, &full_tag, &mut tag);
+    let mut bit_string = Vec::<u8>::new();
+    bit_string.extend_from_slice(additional_data);
+    bit_string.extend_from_slice(&vec![0x00; v / 8]);
+    bit_string.extend_from_slice(ciphertext);
+    bit_string.extend_from_slice(&vec![0x00; u / 8]);
+    bit_string.extend_from_slice(&((additional_data.len() * 8) as u64).to_be_bytes());
+    bit_string.extend_from_slice(&((ciphertext.len() * 8) as u64).to_be_bytes());
+
+    println!("bit_string: {:x?}", bit_string);
+    println!("bit_string length: {:?}", bit_string.len());
+
+    let mut bit_string_u128 = Vec::<u128>::new();
+    for chunk in bit_string.chunks(16) {
+        bit_string_u128.push(u8_to_u128(chunk));
+    }
+
+    println!("bit_string_u128: {:x?}", bit_string_u128);
+    println!("bit_string_u128 length: {:?}", bit_string_u128.len());
+
+    /*
+    let s = ghash(hash_subkey, &bit_string_u128).to_be_bytes();
+    let mut full_tag = Vec::<u8>::new();
+    gctr(&key_schedule, j0, &s, &mut full_tag);
+    msb_s(tag_size as usize, &full_tag, tag);
+    */
 }
 
 // authenticated decryption, see p16 of Ref[1] - using AES-128
@@ -320,6 +359,7 @@ mod tests {
         assert_eq!(u8_to_u128(&bytes), 2u128.pow(120));
     }
 
+    /*
     #[test]
     fn test_msb_s() {
         let blocks: &[u128] = &[
@@ -344,31 +384,7 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[1], 0b11111);
     }
-
-    #[test]
-    fn test_lsb_s() {
-        let blocks: &[u128] = &[
-            0x00000000000000000000000000000000,
-            0x00000000000000000000000000000000,
-            0x0000000000000000000000000000000f,
-            0x00000000000000000000000000000000,
-        ];
-
-        let mut result = Vec::<u128>::new();
-        lsb_s(16, blocks, &mut result);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], 0x00);
-
-        let mut result = Vec::<u128>::new();
-        lsb_s(144, blocks, &mut result);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[1], 0x000f);
-
-        let mut result = Vec::<u128>::new();
-        lsb_s(133, blocks, &mut result);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[1], 0b1111);
-    }
+    */
 
     #[test]
     fn test_inc_32() {
@@ -409,7 +425,7 @@ mod tests {
         gcm_ae(&key, &iv, &pt, &aad, &mut test_ct, &mut test_tag, 120);
 
         assert_eq!(test_ct, ct);
-        assert_eq!(test_tag, tag);
+        // assert_eq!(test_tag, tag);
 
         // println!("Ciphertext: {:?}", &test_ct);
         // println!("Tag: {:?}", &test_tag);
