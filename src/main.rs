@@ -113,11 +113,15 @@ fn mul_blocks(x: u128, y: u128) -> u128 {
     let mut v = y;
     let R = 225u128 << 120; // R is 11100001 || 0(120), see spec[1]
 
-    for i in 0..128 {
+    for i in 0..127 {
         let xi_bit = (x >> i) & 1;
         let vi_bit = (v >> i) & 1;
         let zi_bit = (z >> i) & 1;
 
+        println!(
+            "i: {}, z: {}, zi_bit: {}, vi_bit: {}, xi_bit: {}",
+            i, z, zi_bit, vi_bit, xi_bit
+        );
         if xi_bit == 0 {
             z |= zi_bit << (i + 1);
         } else {
@@ -260,12 +264,10 @@ pub fn gcm_ae(
     println!("bit_string_u128: {:x?}", bit_string_u128);
     println!("bit_string_u128 length: {:?}", bit_string_u128.len());
 
-    /*
     let s = ghash(hash_subkey, &bit_string_u128).to_be_bytes();
     let mut full_tag = Vec::<u8>::new();
     gctr(&key_schedule, j0, &s, &mut full_tag);
     msb_s(tag_size as usize, &full_tag, tag);
-    */
 }
 
 // authenticated decryption, see p16 of Ref[1] - using AES-128
@@ -369,7 +371,7 @@ mod tests {
         gcm_ae(&key, &iv, &pt, &aad, &mut test_ct, &mut test_tag, 120);
 
         assert_eq!(test_ct, ct);
-        // assert_eq!(test_tag, tag);
+        assert_eq!(test_tag, tag);
 
         // println!("Ciphertext: {:?}", &test_ct);
         // println!("Tag: {:?}", &test_tag);
