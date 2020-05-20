@@ -43,14 +43,6 @@ pub enum Authenticity {
     Fail,
 }
 
-// TODO: clean up - this helper function is really needed
-fn print_bits(bytes: &[u8]) {
-    for b in bytes {
-        print!("{:b}", b);
-    }
-    print!("\n");
-}
-
 // assume big endian
 fn u8_to_u128(bytes: &[u8]) -> u128 {
     assert!(bytes.len() <= 16);
@@ -113,26 +105,29 @@ fn mul_blocks(x: u128, y: u128) -> u128 {
     let mut v = y;
     let R = 225u128 << 120; // R is 11100001 || 0(120), see spec[1]
 
-    for i in 0..127 {
+    println!("x: {:0128b}", x);
+    println!("v: {:0128b}", v);
+    println!("z: {:0128b}", z);
+
+    // do this in reverse, because bit strings are treated as little endian
+    for i in (0..128).into_iter().rev() {
         let xi_bit = (x >> i) & 1;
         let vi_bit = (v >> i) & 1;
         let zi_bit = (z >> i) & 1;
 
         println!(
-            "i: {}, z: {}, zi_bit: {}, vi_bit: {}, xi_bit: {}",
+            "i: {}, z: {:0128b}, zi_bit: {}, vi_bit: {}, xi_bit: {}",
             i, z, zi_bit, vi_bit, xi_bit
         );
-        if xi_bit == 0 {
-            z |= zi_bit << (i + 1);
-        } else {
-            z |= (zi_bit ^ vi_bit) << (i + 1);
+        if xi_bit != 0 {
+            z = z ^ v
         }
 
         // if lsb is 1
         if v & 1 == 0 {
-            v |= vi_bit >> 1;
+            v = v >> 1;
         } else {
-            v |= (vi_bit >> 1) ^ R;
+            v = (v >> 1) ^ R;
         }
     }
 
@@ -149,11 +144,12 @@ fn ghash(hash_subkey: u128, bit_string: &[u128]) -> u128 {
     // TODO: do proper error handling here
     assert!(m > 0);
 
-    for i in 1..m {
-        let yi = mul_blocks(y ^ bit_string[i - 1], hash_subkey);
+    for i in 0..m {
+        let yi = mul_blocks(y ^ bit_string[i], hash_subkey);
         y = yi;
     }
 
+    println!("y: {:x?}", y);
     y
 }
 
@@ -172,8 +168,8 @@ fn gctr(key_schedule: &[u32; 44], counter_block: u128, bit_string: &[u8], output
 
     // need to gather bytes in bit_string into 128 bit blocks. Use chunks() which
     // will also give us a partial block (if necessary) at the end
-    for (b, block) in bit_string.chunks(16).enumerate() {
-        println!("Block: {:?}", block);
+    for block in bit_string.chunks(16) {
+        println!("Block: {:x?}", block);
 
         let mut y = 0u128;
 
@@ -250,11 +246,12 @@ pub fn gcm_ae(
     bit_string.extend_from_slice(&vec![0x00; v / 8]);
     bit_string.extend_from_slice(ciphertext);
     bit_string.extend_from_slice(&vec![0x00; u / 8]);
-    bit_string.extend_from_slice(&((additional_data.len() * 8) as u64).to_be_bytes());
-    bit_string.extend_from_slice(&((ciphertext.len() * 8) as u64).to_be_bytes());
+    bit_string.extend_from_slice(&(ad_len as u64).to_be_bytes());
+    bit_string.extend_from_slice(&(cipher_len as u64).to_be_bytes());
 
-    println!("bit_string: {:x?}", bit_string);
-    println!("bit_string length: {:?}", bit_string.len());
+    println!("computed j0: {:x?}", j0);
+    println!("ad length: {:?}", additional_data.len());
+    println!("ciphertext length: {:?}", ciphertext.len());
 
     let mut bit_string_u128 = Vec::<u128>::new();
     for chunk in bit_string.chunks(16) {
@@ -264,10 +261,16 @@ pub fn gcm_ae(
     println!("bit_string_u128: {:x?}", bit_string_u128);
     println!("bit_string_u128 length: {:?}", bit_string_u128.len());
 
+    println!("ct: {:x?}", ciphertext);
     let s = ghash(hash_subkey, &bit_string_u128).to_be_bytes();
+    println!("s: {:x?}", s);
+
     let mut full_tag = Vec::<u8>::new();
     gctr(&key_schedule, j0, &s, &mut full_tag);
+    println!("full_tag: {:x?}", full_tag);
+
     msb_s(tag_size as usize, &full_tag, tag);
+    println!("tag: {:x?}", tag);
 }
 
 // authenticated decryption, see p16 of Ref[1] - using AES-128
@@ -358,12 +361,13 @@ mod tests {
     #[test]
     fn test_gcm_ae() {
         use hex::FromHex;
-        let key = Vec::from_hex("c608316f809e3c54f3272a18256a5fec").expect("Couldn't parse key");
-        let iv = Vec::from_hex("38f4ec6b2c1c197bf6e0e994").expect("Couldn't parse IV");
-        let ct = Vec::from_hex("659228b6282c2226c755136a9fc1bcacdc8cb640660cc784a841b5c385f34302a8bc5c0bd30b982d1b641bf642d958dddb3d46").expect("Couldn't parse ciphertext");
-        let aad = Vec::from_hex("d22804c6a53262ccd930946be718e465").expect("Couldn't parse AAD");
-        let tag = Vec::from_hex("ac9ed5212b5623d445d76a5f25e14e").expect("Couldn't parse tag");
-        let pt = Vec::from_hex("2fc429740460dd0bea16bfe314d3258f6708b5ebb8ad2c4afd4d11fe99646227abe997f0688fc0e3f1c7c0462dc9254dbebfb0").expect("Couldn't parse plaintext");
+
+        let key = Vec::from_hex("02f4ecf5fd34c1c809aeb6bf89fdc854").expect("Couldn't parse key");
+        let iv = Vec::from_hex("604fd7150dab208356842a52").expect("Couldn't parse IV");
+        let ct = Vec::from_hex("a024576d47748eca6ad23668652896d75948a5e7120d544746efb30ffbc9a264a460c0296cb290513f0788c6892cbf69193a6d").expect("Couldn't parse ciphertext");
+        let aad = Vec::from_hex("e4b76c7274e732cd3c422c909150a056").expect("Couldn't parse AAD");
+        let tag = Vec::from_hex("03ab31b8d0095bd0fa389b4de0a087").expect("Couldn't parse tag");
+        let pt = Vec::from_hex("5c4e496bae20c0c56054ed7cff3f81e5a550e1a32035033cdab62353b1f624b23ad57ab8ef0c3d74e4d3fddceabf7180e88e15").expect("Couldn't parse plaintext");
 
         let mut test_tag = Vec::<u8>::new();
         let mut test_ct = Vec::<u8>::new();
