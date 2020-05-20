@@ -49,9 +49,7 @@ fn u8_to_u128(bytes: &[u8]) -> u128 {
 
     let mut output = 0u128;
     for (i, &byte) in bytes.iter().rev().enumerate() {
-        // println!("shifting byte: {}, by: {}", byte, i * 8);
         output |= (byte as u128) << (i * 8);
-        // println!("output: {:b}", output);
     }
 
     // println!("bytes: {:?}", bytes);
@@ -74,8 +72,6 @@ fn msb_s(s: usize, bytes: &[u8], result: &mut Vec<u8>) {
     // if there are bits that spill over a block boundary
     // use a mask to grab it , e.g. byte & 0xf0
     if bits_remainder != 0 {
-        // println!("bits remainder: {:b}", bits_remainder);
-        // println!("pulling from byte num: {}", num_bytes);
         let remainder = bytes[num_bytes] >> (8 - bits_remainder);
         result.push(remainder);
     }
