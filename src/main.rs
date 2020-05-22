@@ -38,6 +38,7 @@ Outputs:
 
 */
 
+#[derive(PartialEq, Debug)]
 pub enum Authenticity {
     Pass,
     Fail,
@@ -101,20 +102,19 @@ fn mul_blocks(x: u128, y: u128) -> u128 {
     let mut v = y;
     let R = 225u128 << 120; // R is 11100001 || 0(120), see spec[1]
 
-    println!("x: {:0128b}", x);
-    println!("v: {:0128b}", v);
-    println!("z: {:0128b}", z);
-
     // do this in reverse, because bit strings are treated as little endian
     for i in (0..128).into_iter().rev() {
         let xi_bit = (x >> i) & 1;
         let vi_bit = (v >> i) & 1;
         let zi_bit = (z >> i) & 1;
 
+        /*
         println!(
             "i: {}, z: {:0128b}, zi_bit: {}, vi_bit: {}, xi_bit: {}",
             i, z, zi_bit, vi_bit, xi_bit
         );
+        */
+
         if xi_bit != 0 {
             z = z ^ v
         }
@@ -189,33 +189,21 @@ fn gctr(key_schedule: &[u32; 44], counter_block: u128, bit_string: &[u8], output
     }
 }
 
-// authenticated encryption algorithm, see p15 of Ref[1] - using AES-128
-// returns ciphertext and tag
-pub fn gcm_ae(
-    key: &[u8],
-    iv_bytes: &[u8],
-    plaintext: &[u8],
-    additional_data: &[u8],
-    ciphertext: &mut Vec<u8>,
-    tag: &mut Vec<u8>,
-    tag_size: u32, // do we need tag length (bits) parameterised?
-) {
+// build key schedule and hash subkey with 0 block
+fn hash_subkey(key: &[u8], key_schedule: &mut [u32]) -> u128 {
     // build the key schedule for cipher (AES-128)
-    let mut key_schedule = [0u32; 4 * (aes_crypt::Rounds::Ten as usize + 1)];
-    aes_crypt::expand_key(
-        &key,
-        &mut key_schedule,
-        aes_crypt::KeyLength::OneTwentyEight,
-    );
+    aes_crypt::expand_key(&key, key_schedule, aes_crypt::KeyLength::OneTwentyEight);
     let hash_bytes_subkey = aes_crypt::cipher(&[0u8; 16], &key_schedule);
     let hash_subkey = u8_to_u128(&hash_bytes_subkey);
 
-    // build the ciphertext
-    // pad IV to ensure it is a multiple of 128 bits - assume we'll only work with IVs <= 128 bits
-    let mut padded_iv = Vec::<u128>::new();
+    hash_subkey
+}
+
+// pad IV to ensure it is a multiple of 128 bits - assume we'll only work with IVs <= 128 bits
+fn init_iv(iv_bytes: &[u8], hash_subkey: u128) -> u128 {
     assert!(iv_bytes.len() <= 16);
 
-    // build the pre-counter block, j0, to pass to gctr()
+    let mut padded_iv = Vec::<u128>::new();
     let mut j0 = 0u128;
 
     let iv = u8_to_u128(iv_bytes);
@@ -228,9 +216,19 @@ pub fn gcm_ae(
 
         j0 = ghash(hash_subkey, &padded_iv);
     }
-    gctr(&key_schedule, inc_32(j0), plaintext, ciphertext);
 
-    // build the tag
+    j0
+}
+
+fn build_tag(
+    additional_data: &[u8],
+    ciphertext: &mut [u8],
+    hash_subkey: u128,
+    key_schedule: &[u32; 44],
+    j0: u128,
+    tag: &mut Vec<u8>,
+    tag_size: usize,
+) {
     let cipher_len = ciphertext.len() * 8;
     let ad_len = additional_data.len() * 8;
     let u = 128 * ((cipher_len + 128 - 1) / 128) - cipher_len;
@@ -262,23 +260,86 @@ pub fn gcm_ae(
     println!("s: {:x?}", s);
 
     let mut full_tag = Vec::<u8>::new();
-    gctr(&key_schedule, j0, &s, &mut full_tag);
+    gctr(key_schedule, j0, &s, &mut full_tag);
     println!("full_tag: {:x?}", full_tag);
 
-    msb_s(tag_size as usize, &full_tag, tag);
+    msb_s(tag_size, &full_tag, tag);
+}
+
+// authenticated encryption algorithm, see p15 of Ref[1] - using AES-128
+// returns ciphertext and tag
+pub fn gcm_ae(
+    key: &[u8],
+    iv_bytes: &[u8],
+    plaintext: &[u8],
+    additional_data: &[u8],
+    ciphertext: &mut Vec<u8>,
+    tag: &mut Vec<u8>,
+    tag_size: usize, // do we need tag length (bits) parameterised?
+) {
+    // build key schedule and hash subkey with 0 block
+    let mut key_schedule = [0u32; 4 * (aes_crypt::Rounds::Ten as usize + 1)];
+    let hash_subkey = hash_subkey(key, &mut key_schedule);
+
+    // build the ciphertext
+    let j0 = init_iv(&iv_bytes, hash_subkey);
+    gctr(&key_schedule, inc_32(j0), plaintext, ciphertext);
+
+    // build the tag
+    let tag = build_tag(
+        additional_data,
+        ciphertext,
+        hash_subkey,
+        &key_schedule,
+        j0,
+        tag,
+        tag_size,
+    );
+
     println!("tag: {:x?}", tag);
 }
 
 // authenticated decryption, see p16 of Ref[1] - using AES-128
 // returns plaintext and an Authenticity flag - Pass or Fail
 pub fn gcm_ad(
-    iv: &[u8],
-    ciphertext: &[u8],
+    key: &[u8],
+    iv_bytes: &[u8],
+    ciphertext: &mut [u8],
     additional_data: &[u8],
-    tag: &[u8],
-    plaintext: &mut [u8],
+    tag: &mut Vec<u8>,
+    tag_size: usize,
+    plaintext: &mut Vec<u8>,
 ) -> Authenticity {
-    return Authenticity::Pass;
+    // TODO: check that IV, A and C are of supporting bit lengths
+    if tag.len() * 8 != tag_size {
+        return Authenticity::Fail;
+    }
+
+    // build key schedule and hash subkey with 0 block
+    let mut key_schedule = [0u32; 4 * (aes_crypt::Rounds::Ten as usize + 1)];
+    let hash_subkey = hash_subkey(key, &mut key_schedule);
+
+    // build the plaintext
+    let j0 = init_iv(&iv_bytes, hash_subkey);
+    gctr(&key_schedule, inc_32(j0), ciphertext, plaintext);
+
+    // compute the tag
+    let mut computed_tag = Vec::<u8>::new();
+    build_tag(
+        additional_data,
+        ciphertext,
+        hash_subkey,
+        &key_schedule,
+        j0,
+        &mut computed_tag,
+        tag_size,
+    );
+
+    if *tag == computed_tag {
+        return Authenticity::Pass;
+    } else {
+        return Authenticity::Fail;
+    }
 }
 
 fn main() {
@@ -306,8 +367,9 @@ mod tests {
 
     /*
     #[test]
+    #[ignore]
     fn test_msb_s() {
-        let blocks: &[u128] = &[
+        let blocks: &[u28] = &[
             0x00000000000000000000000000000000,
             0xff000000000000000000000000000000,
             0xffa00000000000000000000000000000,
@@ -346,12 +408,15 @@ mod tests {
         assert_eq!(inc_32(test), 0x00000000000000000000000e00000000);
     }
     #[test]
+    #[ignore]
     fn test_mul_blocks() {}
 
     #[test]
+    #[ignore]
     fn test_ghash() {}
 
     #[test]
+    #[ignore]
     fn test_gctr() {}
 
     #[test]
@@ -372,11 +437,34 @@ mod tests {
 
         assert_eq!(test_ct, ct);
         assert_eq!(test_tag, tag);
-
-        // println!("Ciphertext: {:?}", &test_ct);
-        // println!("Tag: {:?}", &test_tag);
     }
 
     #[test]
-    fn test_gcm_ad() {}
+    fn test_gcm_ad() {
+        use hex::FromHex;
+
+        // authenticated decryption that fails
+        let key = Vec::from_hex("f5a0b1639c67c7760109056a3a329804").expect("Couldn't parse key");
+        let iv = Vec::from_hex("e1b75506d66509a52f0960f7").expect("Couldn't parse IV");
+        let mut ct = Vec::from_hex("4d8738341660f7e49ca1ddf7db1255c1eca46b947fa80134340d364e611255194f3261413a82e763720ef81dedc8b10bed3b30").expect("Couldn't parse ciphertext");
+        let aad = Vec::from_hex("8421f67419d3d37cc9e97b712b8b0924").expect("Couldn't parse AAD");
+        let mut tag = Vec::from_hex("d7c586892b2e6ad60c2106a8").expect("Couldn't parse tag");
+
+        let mut test_pt = Vec::<u8>::new();
+        let result = gcm_ad(&key, &iv, &mut ct, &aad, &mut tag, 96, &mut test_pt);
+        assert_eq!(result, Authenticity::Fail);
+
+        // authenticated decryption test that passes
+        let key = Vec::from_hex("a42c74c1284bf27573f57da53ebeab79").expect("Couldn't parse key");
+        let iv = Vec::from_hex("7cf56f16a053de804ee7e2e7").expect("Couldn't parse IV");
+        let mut ct = Vec::from_hex("12053dcbeda87a9f896c12503ca48d7a47496255282869bd6e09547a07b13f7ea40ba295028f728430af6613d9258034b219af").expect("Couldn't parse ciphertext");
+        let aad = Vec::from_hex("654c9eefee483089370c3932268bbfb9").expect("Couldn't parse AAD");
+        let mut tag = Vec::from_hex("268777ddc8caffad4a50cc53").expect("Couldn't parse tag");
+        let pt = Vec::from_hex("854b6ec0c014ef38113cea5a9a1101e96a7110738cb38a8a512e85b4cedb235e2a030b4d38108173e1f20e09c0a4de7624466e").expect("Couldn't parse plaintext");
+
+        let mut test_pt = Vec::<u8>::new();
+        let result = gcm_ad(&key, &iv, &mut ct, &aad, &mut tag, 96, &mut test_pt);
+        assert_eq!(test_pt, pt);
+        assert_eq!(result, Authenticity::Pass);
+    }
 }
