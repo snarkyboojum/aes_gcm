@@ -8,6 +8,8 @@ edition = "2018"
 
 [dependencies]
 aes_crypt = { git = "https://github.com/snarkyboojum/aes_crypt.git" }
+# would be better if this was only a dev dependency
+hex = "0.4.2"
 
 [dev-dependencies]
 hex = "0.4.2"

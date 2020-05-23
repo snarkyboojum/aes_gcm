@@ -100,20 +100,11 @@ fn inc_32(bit_string: u128) -> u128 {
 fn mul_blocks(x: u128, y: u128) -> u128 {
     let mut z = 0u128;
     let mut v = y;
-    let R = 225u128 << 120; // R is 11100001 || 0(120), see spec[1]
+    let r = 225u128 << 120; // R is 11100001 || 0(120), see spec[1]
 
     // do this in reverse, because bit strings are treated as little endian
     for i in (0..128).into_iter().rev() {
         let xi_bit = (x >> i) & 1;
-        let vi_bit = (v >> i) & 1;
-        let zi_bit = (z >> i) & 1;
-
-        /*
-        println!(
-            "i: {}, z: {:0128b}, zi_bit: {}, vi_bit: {}, xi_bit: {}",
-            i, z, zi_bit, vi_bit, xi_bit
-        );
-        */
 
         if xi_bit != 0 {
             z = z ^ v
@@ -123,7 +114,7 @@ fn mul_blocks(x: u128, y: u128) -> u128 {
         if v & 1 == 0 {
             v = v >> 1;
         } else {
-            v = (v >> 1) ^ R;
+            v = (v >> 1) ^ r;
         }
     }
 
@@ -145,7 +136,7 @@ fn ghash(hash_subkey: u128, bit_string: &[u128]) -> u128 {
         y = yi;
     }
 
-    println!("y: {:x?}", y);
+    // println!("y: {:x?}", y);
     y
 }
 
@@ -165,9 +156,9 @@ fn gctr(key_schedule: &[u32; 44], counter_block: u128, bit_string: &[u8], output
     // need to gather bytes in bit_string into 128 bit blocks. Use chunks() which
     // will also give us a partial block (if necessary) at the end
     for block in bit_string.chunks(16) {
-        println!("Block: {:x?}", block);
+        // println!("Block: {:x?}", block);
 
-        let mut y = 0u128;
+        let y;
 
         // cater for a partial block
         if block.len() < 16 {
@@ -204,7 +195,7 @@ fn init_iv(iv_bytes: &[u8], hash_subkey: u128) -> u128 {
     assert!(iv_bytes.len() <= 16);
 
     let mut padded_iv = Vec::<u128>::new();
-    let mut j0 = 0u128;
+    let j0;
 
     let iv = u8_to_u128(iv_bytes);
     if iv_bytes.len() == 12 {
@@ -233,7 +224,7 @@ fn build_tag(
     let ad_len = additional_data.len() * 8;
     let u = 128 * ((cipher_len + 128 - 1) / 128) - cipher_len;
     let v = 128 * ((ad_len + 128 - 1) / 128) - ad_len;
-    println!("u, v: {}, {}", u, v);
+    // println!("u, v: {}, {}", u, v);
 
     let mut bit_string = Vec::<u8>::new();
     bit_string.extend_from_slice(additional_data);
@@ -243,25 +234,25 @@ fn build_tag(
     bit_string.extend_from_slice(&(ad_len as u64).to_be_bytes());
     bit_string.extend_from_slice(&(cipher_len as u64).to_be_bytes());
 
-    println!("computed j0: {:x?}", j0);
-    println!("ad length: {:?}", additional_data.len());
-    println!("ciphertext length: {:?}", ciphertext.len());
+    // println!("computed j0: {:x?}", j0);
+    // println!("ad length: {:?}", additional_data.len());
+    // println!("ciphertext length: {:?}", ciphertext.len());
 
     let mut bit_string_u128 = Vec::<u128>::new();
     for chunk in bit_string.chunks(16) {
         bit_string_u128.push(u8_to_u128(chunk));
     }
 
-    println!("bit_string_u128: {:x?}", bit_string_u128);
-    println!("bit_string_u128 length: {:?}", bit_string_u128.len());
+    // println!("bit_string_u128: {:x?}", bit_string_u128);
+    // println!("bit_string_u128 length: {:?}", bit_string_u128.len());
 
-    println!("ct: {:x?}", ciphertext);
+    // println!("ct: {:x?}", ciphertext);
     let s = ghash(hash_subkey, &bit_string_u128).to_be_bytes();
-    println!("s: {:x?}", s);
+    // println!("s: {:x?}", s);
 
     let mut full_tag = Vec::<u8>::new();
     gctr(key_schedule, j0, &s, &mut full_tag);
-    println!("full_tag: {:x?}", full_tag);
+    // println!("full_tag: {:x?}", full_tag);
 
     msb_s(tag_size, &full_tag, tag);
 }
@@ -286,7 +277,7 @@ pub fn gcm_ae(
     gctr(&key_schedule, inc_32(j0), plaintext, ciphertext);
 
     // build the tag
-    let tag = build_tag(
+    build_tag(
         additional_data,
         ciphertext,
         hash_subkey,
@@ -296,7 +287,7 @@ pub fn gcm_ae(
         tag_size,
     );
 
-    println!("tag: {:x?}", tag);
+    // println!("tag: {:x?}", tag);
 }
 
 // authenticated decryption, see p16 of Ref[1] - using AES-128
@@ -340,10 +331,6 @@ pub fn gcm_ad(
     } else {
         return Authenticity::Fail;
     }
-}
-
-fn main() {
-    println!(r#"Welcome to the GCM mode for AES (128)!"#);
 }
 
 #[cfg(test)]
