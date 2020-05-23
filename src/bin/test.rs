@@ -7,6 +7,9 @@ fn main() {
 
     use hex::FromHex;
 
+    // TODO: write a test harness to parse and run each test in
+    // test_vectors/gcmEncryptExtIV128.rsp and test_vectors/gcmDecrypt128.rsp
+
     let key = Vec::from_hex("02f4ecf5fd34c1c809aeb6bf89fdc854").expect("Couldn't parse key");
     let iv = Vec::from_hex("604fd7150dab208356842a52").expect("Couldn't parse IV");
     let ct = Vec::from_hex("a024576d47748eca6ad23668652896d75948a5e7120d544746efb30ffbc9a264a460c0296cb290513f0788c6892cbf69193a6d").expect("Couldn't parse ciphertext");
